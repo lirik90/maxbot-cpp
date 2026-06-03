@@ -28,9 +28,10 @@ public:
         HtmlResponse = 100, InvalidJson = 101
     };
 
-    explicit BotException(const std::string& description, ErrorCode errorCode);
+    explicit BotException(const std::string& description, ErrorCode errorCode, const std::string& urlPath = {}, const std::string& method = {});
 
     const ErrorCode errorCode;
+	const std::string urlPath, method;
 };
 
 }
