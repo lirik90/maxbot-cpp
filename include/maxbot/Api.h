@@ -93,7 +93,7 @@ public:
      *
      * @return Returns True on success.
      */
-    bool setWebhook(const SubscriptionRequestBody::Ptr& msg) const;
+    void setWebhook(const SubscriptionRequestBody::Ptr& msg) const;
 
     /**
      * @brief Use this method to remove webhook integration if you decide to switch back to Api::getUpdates.
@@ -102,7 +102,7 @@ public:
      *
      * @return Returns True on success.
      */
-    bool deleteWebhook(const std::string& url) const;
+    void deleteWebhook(const std::string& url) const;
 
     /**
      * @brief Use this method to get current webhook status.
@@ -165,7 +165,7 @@ public:
     Message::Ptr sendMessage(std::int64_t chatId,
                              NewMessageBody::Ptr msg,
                              bool disableLinkPreview = false) const;
-	bool editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const;
+	void editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const;
 
     /**
      * @brief Use this method to forward messages of any kind.
@@ -1179,7 +1179,7 @@ public:
      * 
      * @return On success, True is returned.
      */
-	bool answerCallbackQuery(const std::string& callbackId, CallbackAnswer::Ptr answer) const;
+	void answerCallbackQuery(const std::string& callbackId, CallbackAnswer::Ptr answer) const;
 
     /**
      * @brief Use this method to get the list of boosts added to a chat by a user.
