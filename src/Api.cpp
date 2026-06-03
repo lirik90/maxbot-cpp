@@ -19,6 +19,12 @@ Api::Api(const HttpClient& httpClient, const std::string& url)
 	}())
 { }
 
+void checkSimpleQueryResult(const boost::property_tree::ptree& data)
+{
+	if (!data.get<bool>("success", false))
+		throw BotException("SimpleResult message: " + data.get("message", ""), BotException::ErrorCode::Undefined);
+}
+
 Updates::Ptr Api::getUpdates(
 	std::int64_t marker,
     std::int32_t limit,
@@ -43,14 +49,14 @@ Updates::Ptr Api::getUpdates(
     return _botTypeParser.parseJsonAndGetUpdates(sendRequest(url));
 }
 
-bool Api::setWebhook(const SubscriptionRequestBody::Ptr& msg) const
+void Api::setWebhook(const SubscriptionRequestBody::Ptr& msg) const
 {
     auto json = _botTypeParser.parseSubscriptionRequestBody(msg);
-    return sendRequest("subscriptions", json).get<bool>("success", false);
+    checkSimpleQueryResult(sendRequest("subscriptions", json));
 }
 
-bool Api::deleteWebhook(const std::string& url) const {
-    return sendRequest("subscriptions?url="+StringTools::urlEncode(url), std::vector<HttpReqArg>{}, "DELETE").get<bool>("success", false);
+void Api::deleteWebhook(const std::string& url) const {
+    checkSimpleQueryResult(sendRequest("subscriptions?url="+StringTools::urlEncode(url), std::vector<HttpReqArg>{}, "DELETE"));
 }
 
 WebhookInfo::Ptr Api::getWebhookInfo() const {
@@ -91,14 +97,14 @@ Message::Ptr Api::sendMessage(std::int64_t chatId,
     return _botTypeParser.parseJsonAndGetMessage(sendRequest(url, json).get_child("message"));
 }
 
-bool Api::editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const
+void Api::editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const
 {
 	if (!msg)
-		return {};
+		return;
 
 	auto url = "messages?message_id=" + msgId;
     auto json = _botTypeParser.parseNewMessageBody(msg);
-    return sendRequest(url, json, "PUT").get<bool>("success", false);
+    checkSimpleQueryResult(sendRequest(url, json, "PUT"));
 }
 
 Message::Ptr Api::forwardMessage(boost::variant<std::int64_t, std::string> chatId,
@@ -1451,10 +1457,10 @@ ChatMember::Ptr Api::getChatMember(boost::variant<std::int64_t, std::string> cha
     return _botTypeParser.parseJsonAndGetChatMember(sendRequest("getChatMember", args));
 }
 
-bool Api::answerCallbackQuery(const std::string& callbackId, CallbackAnswer::Ptr answer) const {
+void Api::answerCallbackQuery(const std::string& callbackId, CallbackAnswer::Ptr answer) const {
 	auto url = "answers?callback_id=" + callbackId;
     auto json = _botTypeParser.parseCallbackAnswer(answer);
-    return sendRequest(url, json).get<bool>("success", false);
+    checkSimpleQueryResult(sendRequest(url, json));
 }
 
 UserChatBoosts::Ptr Api::getUserChatBoosts(boost::variant<std::int64_t, std::string> chatId,
@@ -1924,6 +1930,12 @@ boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const s
     std::string url(_url);
     url += urlPath;
 
+	auto getMethod = [&]() -> std::string {
+		if (!customMethod.empty())
+			return customMethod;
+		return args.empty() ? "GET" : "POST";
+	};
+
     int requestRetryBackoff = _httpClient.getRequestBackoff();
     int retries = 0;
     while (1)
@@ -1932,7 +1944,7 @@ boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const s
             auto [httpCode, serverResponse] = _httpClient.makeRequest(url, args, customMethod);
             if (!serverResponse.compare(0, 6, "<html>")) {
                 std::string message = "maxbot-cpp library have got html page instead of json response. Maybe you entered wrong bot token.";
-                throw BotException(message, BotException::ErrorCode::HtmlResponse, urlPath, customMethod);
+                throw BotException(message, BotException::ErrorCode::HtmlResponse, urlPath, getMethod());
             }
 
             boost::property_tree::ptree result;
@@ -1941,11 +1953,11 @@ boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const s
             } catch (boost::property_tree::ptree_error& e) {
                 std::string message = "maxbot-cpp library can't parse json response. " + std::string(e.what());
 
-                throw BotException(message, BotException::ErrorCode::InvalidJson, urlPath, customMethod);
+                throw BotException(message, BotException::ErrorCode::InvalidJson, urlPath, getMethod());
             }
 
 			if (httpCode < 200 || httpCode > 299)
-				throw BotException(result.get("message", ""), static_cast<BotException::ErrorCode>(httpCode), urlPath, customMethod);
+				throw BotException(result.get("message", ""), static_cast<BotException::ErrorCode>(httpCode), urlPath, getMethod());
 
 			return result;
         } catch (...) {
