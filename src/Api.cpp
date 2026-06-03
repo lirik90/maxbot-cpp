@@ -1951,7 +1951,7 @@ boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const s
             auto [httpCode, serverResponse] = _httpClient.makeRequest(url, args, customMethod);
             if (!serverResponse.compare(0, 6, "<html>")) {
                 std::string message = "maxbot-cpp library have got html page instead of json response. Maybe you entered wrong bot token.";
-                throw BotException(message, BotException::ErrorCode::HtmlResponse);
+                throw BotException(message, BotException::ErrorCode::HtmlResponse, urlPath, customMethod);
             }
 
             boost::property_tree::ptree result;
@@ -1960,25 +1960,21 @@ boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const s
             } catch (boost::property_tree::ptree_error& e) {
                 std::string message = "maxbot-cpp library can't parse json response. " + std::string(e.what());
 
-                throw BotException(message, BotException::ErrorCode::InvalidJson);
+                throw BotException(message, BotException::ErrorCode::InvalidJson, urlPath, customMethod);
             }
 
 			if (httpCode < 200 || httpCode > 299)
-			{
-				std::string message = result.get("message", "");
-				throw BotException(message, static_cast<BotException::ErrorCode>(httpCode));
-			}
+				throw BotException(result.get("message", ""), static_cast<BotException::ErrorCode>(httpCode), urlPath, customMethod);
 
 			return result;
         } catch (...) {
             int max_retries = _httpClient.getRequestMaxRetries();
-            if ((max_retries >= 0) && (retries == max_retries)) {
+            if ((max_retries >= 0) && (retries == max_retries))
                 throw;
-            } else {
-                std::this_thread::sleep_for(std::chrono::seconds(requestRetryBackoff));
-                retries++;
-                continue;
-            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(requestRetryBackoff));
+            retries++;
+            continue;
         }
     }
 }
