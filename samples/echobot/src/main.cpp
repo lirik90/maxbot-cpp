@@ -4,16 +4,18 @@
 #include <exception>
 #include <string>
 
-#include <tgbot/tgbot.h>
+#include <maxbot/maxbot.h>
+#include <maxbot/net/CurlHttpClient.h>
 
 using namespace std;
-using namespace TgBot;
+using namespace MaxBot;
 
 int main() {
     string token(getenv("TOKEN"));
     printf("Token: %s\n", token.c_str());
 
-    Bot bot(token);
+	CurlHttpClient client(token);
+    Bot bot(client);
     bot.getEvents().onCommand("start", [&bot](Message::Ptr message) {
         bot.getApi().sendMessage(message->chat->id, "Hi!");
     });
@@ -34,7 +36,7 @@ int main() {
         printf("Bot username: %s\n", bot.getApi().getMe()->username.c_str());
         bot.getApi().deleteWebhook();
 
-        TgLongPoll longPoll(bot);
+        BotLongPoll longPoll(bot);
         while (true) {
             printf("Long poll started\n");
             longPoll.start();
