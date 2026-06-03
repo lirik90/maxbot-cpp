@@ -162,7 +162,7 @@ public:
      *
      * @return On success, the sent Message is returned.
      */
-    Message::Ptr sendMessage(std::int64_t chatId,
+    Message::Ptr sendMessage(int64_t chatId, int64_t userId,
                              NewMessageBody::Ptr msg,
                              bool disableLinkPreview = false) const;
 	void editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const;

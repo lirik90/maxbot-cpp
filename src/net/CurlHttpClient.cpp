@@ -7,16 +7,49 @@
 
 namespace MaxBot {
 
+static int debug_callback(
+	CURL* handle, curl_infotype type, char* data, size_t size, void* userPtr)
+{
+	switch(type) {
+	case CURLINFO_TEXT:
+		printf("INFO: %.*s\n", (int)size, data);
+		break;
+	case CURLINFO_HEADER_OUT:
+		printf("SEND HEADER: %.*s\n", (int)size, data);
+		break;
+	case CURLINFO_DATA_OUT:
+		printf("SEND DATA: %.*s\n", (int)size, data);
+		break;
+	case CURLINFO_HEADER_IN:
+		printf("RECV HEADER: %.*s\n", (int)size, data);
+		break;
+	case CURLINFO_DATA_IN:
+		printf("RECV DATA: %.*s\n", (int)size, data);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static bool isCurlDebugEnabled()
+{
+	if (const char* val = std::getenv("CURL_DEBUG"))
+		return *val == '1';
+	return false;
+}
+
 CurlHttpClient::CurlHttpClient(const std::string& token)
 	: _httpParser()
-	, _authHeader { "Authorization: " + token }
-{ }
+	, _authHeader("Authorization: " + token)
+	, _isDebugEnabled(isCurlDebugEnabled())
+{
+}
 
 CurlHttpClient::~CurlHttpClient() {
     std::lock_guard<std::mutex> lock(curlHandlesMutex);
-    for (auto& c : curlHandles) {
+    for (auto& c : curlHandles)
         curl_easy_cleanup(c.second);
-    }
 }
 
 static CURL* getCurlHandle(const CurlHttpClient *c_) {
@@ -51,9 +84,9 @@ std::pair<long, std::string> CurlHttpClient::makeRequest(const Url& url, const s
     curl_easy_setopt(curl, CURLOPT_PROXY, _proxyUrl);
 
     std::string u = url.protocol + "://" + url.host + url.path;
-    if (args.empty()) {
+    if (!url.query.empty())
         u += "?" + url.query;
-    }
+
     curl_easy_setopt(curl, CURLOPT_URL, u.c_str());
 
 	// Добавляет загаловок с токеном авторизации
@@ -93,6 +126,13 @@ std::pair<long, std::string> CurlHttpClient::makeRequest(const Url& url, const s
 		curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, customMethod.c_str());
 
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+	if (_isDebugEnabled)
+	{
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+		curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, debug_callback);
+		curl_easy_setopt(curl, CURLOPT_DEBUGDATA, this);
+	}
 
     auto res = curl_easy_perform(curl);
 	curl_slist_free_all(headers); // Освобождаем список заголовков

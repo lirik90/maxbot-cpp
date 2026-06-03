@@ -118,16 +118,20 @@ std::string escapeJsonString(const std::string& value) {
     string result;
 
     for (const char& c : value) {
-        switch (c) {
-        case '"':
-        case '\\':
-        case '/':
-            result += '\\';
-            break;
-        }
-
-        result += c;
-    }
+		switch (c) {
+		case '\n':
+			result += "\\n";
+			break;
+		case '"':
+		case '\\':
+		case '/':
+			result += '\\';
+			result += c;
+			break;
+		default:
+			result += c;
+		}
+	}
 
     return result;
 }
