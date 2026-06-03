@@ -32,9 +32,10 @@ public:
 
 private:
     std::string _handle(const std::string& data, const std::unordered_map<std::string, std::string>& headers) {
-        if (headers.at("_method") == "POST" && headers.at("_path") == _path) {
-            _eventHandler.handleUpdate(_botTypeParser.parseJsonAndGetUpdate(_botTypeParser.parseJson(data)));
-        }
+		if (headers.at("_method") == "POST" && headers.at("_path") == _path)
+			_eventHandler.handleUpdate(_botTypeParser.parseJsonAndGetUpdate(_botTypeParser.parseJson(data)));
+		else
+			std::cout << "[BotWebhookServer] unknown request. Path: " << headers.at("_path") << " Method: " << headers.at("_method") << std::endl;
         return HttpServer<Protocol>::_httpParser.generateResponse("", "text/plain", 200, "OK", false);
     }
 
