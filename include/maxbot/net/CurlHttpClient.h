@@ -56,6 +56,7 @@ public:
     }
 
 private:
+	bool _isDebugEnabled = false;
     const HttpParser _httpParser;
     const char* _proxyUrl = NULL;
     long _connectTimeout = 20L;

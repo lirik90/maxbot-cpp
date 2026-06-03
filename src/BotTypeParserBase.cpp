@@ -9,13 +9,13 @@ namespace MaxBot {
     json += '"';
     json += varName;
     json += R"(":)";
-    if (value.front() != '{') {
+    if (value.front() != '{' && value.front() != '[')
         json += '"';
-    }
+
     json += value;
-    if (value.back() != '}') {
+    if (value.back() != '}' && value.back() != ']')
         json += '"';
-    }
+
     json += ',';
 }
 

@@ -1,4 +1,5 @@
 #include "maxbot/BotTypeParser.h"
+#include "maxbot/tools/StringTools.h"
 #include <type_traits>
 #include <variant>
 
@@ -121,7 +122,7 @@ std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
 
     std::string result;
     result += '{';
-    appendToJson(result, "text", msg->text);
+    appendToJson(result, "text", StringTools::escapeJsonString(msg->text));
     appendToJson(result, "notify", msg->notify);
     if (!msg->attachments.empty())
         appendToJson(result, "attachments", parseArray<AttachmentRequest>(&BotTypeParser::parseAttachmentRequest, msg->attachments));
@@ -139,17 +140,15 @@ std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
     if (!o) return {};
     std::string result;
     result += '{';
-	appendToJson(result, "type", o->type);
 	std::visit([&](auto arg) {
 		using T = std::decay_t<decltype(arg)>;
 		if constexpr (!std::is_same_v<T, std::monostate>)
 			if (!arg)
 				return;
 
-		result += "\"payload\":{";
 		if constexpr (std::is_same_v<T, InlineKeyboardAttachmentRequest::Ptr>)
 		{
-			result += "\"buttons\":[";
+			result += "\"type\":\"inline_keyboard\",\"payload\":{\"buttons\":[";
 			for (auto&& mIt : arg->payload.buttons)
 			{
 				result += '[';
@@ -171,10 +170,10 @@ std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
 				result += "],";
 			}
 
-			removeLastComma(result);
-			result += "],";
+			if (!arg->payload.buttons.empty())
+				removeLastComma(result);
+			result += "]},";
 		}
-		result += "},";
 	}, o->_data);
     removeLastComma(result);
     result += '}';
