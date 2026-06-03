@@ -5,6 +5,7 @@
 namespace MaxBot {
 
 void EventHandler::handleUpdate(const Update::Ptr& update) const {
+	std::cout << "[EventHandler] receive event type: " << update->update_type << std::endl;
 	std::visit([&, this](auto arg) {
 		using T = decltype(arg);
 		if constexpr (!std::is_same_v<T, std::monostate>)

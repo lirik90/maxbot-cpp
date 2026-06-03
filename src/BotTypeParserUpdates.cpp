@@ -142,7 +142,7 @@ UpdateMessageCallback::Ptr BotTypeParserUpdates::parseJsonAndGetUpdateMessageCal
 UpdateMessageCreated::Ptr BotTypeParserUpdates::parseJsonAndGetUpdateMessageCreated(const boost::property_tree::ptree& data)
 {
     auto result = std::make_shared<UpdateMessageCreated>();
-    result->message = parseJsonAndGetMessage(data);
+    result->message = tryParseJson(&BotTypeParserUpdates::parseJsonAndGetMessage, data, "message");
     result->user_locale = data.get<std::string>("user_locale", "");
     return result;
 }

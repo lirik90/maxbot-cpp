@@ -1,4 +1,5 @@
 #include "maxbot/BotTypeParser.h"
+#include "maxbot/tools/StringTools.h"
 #include <type_traits>
 #include <variant>
 
@@ -121,7 +122,7 @@ std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
 
     std::string result;
     result += '{';
-    appendToJson(result, "text", msg->text);
+    appendToJson(result, "text", StringTools::escapeJsonString(msg->text));
     appendToJson(result, "notify", msg->notify);
     if (!msg->attachments.empty())
         appendToJson(result, "attachments", parseArray<AttachmentRequest>(&BotTypeParser::parseAttachmentRequest, msg->attachments));
@@ -171,8 +172,9 @@ std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
 				result += "],";
 			}
 
-			removeLastComma(result);
-			result += "],";
+			if (!arg->payload.buttons.empty())
+				removeLastComma(result);
+			result += ']';
 		}
 		result += "},";
 	}, o->_data);
