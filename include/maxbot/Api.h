@@ -93,9 +93,7 @@ public:
      *
      * @return Returns True on success.
      */
-    bool setWebhook(const std::string& url,
-                    const StringArrayPtr& allowedUpdates = nullptr,
-                    const std::string& secretToken = "") const;
+    bool setWebhook(const SubscriptionRequestBody::Ptr& msg) const;
 
     /**
      * @brief Use this method to remove webhook integration if you decide to switch back to Api::getUpdates.
