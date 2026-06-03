@@ -100,9 +100,24 @@ Chat::Ptr BotTypeParser::parseJsonAndGetChat(const boost::property_tree::ptree& 
     return result;
 }
 
+/*static*/ std::string BotTypeParser::parseSubscriptionRequestBody(const SubscriptionRequestBody::Ptr& msg)
+{
+	if (!msg) return {};
+
+	std::string result;
+	result += '{';
+	appendToJson(result, "url", msg->url);
+	if (!msg->update_types.empty())
+		appendToJson(result, "update_types", parseArray<std::string>([] (const std::string& s) { return s; }, msg->update_types));
+	if (!msg->secret.empty())
+		appendToJson(result, "secret", msg->secret);
+	removeLastComma(result);
+	result += '}';
+	return result;
+}
+
 std::string BotTypeParser::parseNewMessageBody(const NewMessageBody::Ptr& msg) {
-    if (!msg)
-        return {};
+	if (!msg) return {};
 
     std::string result;
     result += '{';

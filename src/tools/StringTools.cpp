@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace std;
 
@@ -45,6 +46,18 @@ bool endsWith(const string& str1, const string& str2) {
         --it2;
     }
     return true;
+}
+
+std::string join(const std::vector<std::string>& data, char delimiter)
+{
+	std::string res;
+	for (auto&& it : data)
+	{
+		if (!res.empty())
+			res += delimiter;
+		res += it;
+	}
+	return res;
 }
 
 void split(const string& str, char delimiter, vector<string>& dest) {

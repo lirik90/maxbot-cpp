@@ -29,6 +29,9 @@ bool startsWith(const std::string& str1, const std::string& str2);
 MAXBOT_API
 bool endsWith(const std::string& str1, const std::string& str2);
 
+MAXBOT_API
+std::string join(const std::vector<std::string>& data, char delimiter);
+
 /**
  * Splits string to smaller substrings which have between them a delimiter. Resulting substrings won't have delimiter.
  * @param str Source string

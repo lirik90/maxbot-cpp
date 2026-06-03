@@ -24,48 +24,29 @@ Updates::Ptr Api::getUpdates(
     std::int32_t limit,
     std::int32_t timeout,
     const StringArrayPtr& allowedUpdates) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
 
-    if (marker != 0) {
-        args.emplace_back("marker", marker);
-    }
-    if (limit != 100) {
-        args.emplace_back("limit", std::max(1, std::min(100, limit)));
-    }
-    if (timeout != 0) {
-        args.emplace_back("timeout", timeout);
-    }
-    if (allowedUpdates != nullptr) {
-        auto allowedUpdatesJson = _botTypeParser.parseArray<std::string>(
-            [] (const std::string& s)->std::string {
-            return s;
-        }, *allowedUpdates);
-        args.emplace_back("update_types", allowedUpdatesJson);
-    }
+	std::vector<std::string> args;
+	args.reserve(4);
+	if (marker != 0)
+		args.emplace_back("marker=" + std::to_string(marker));
+	if (limit != 100)
+		args.emplace_back("limit=" + std::to_string(std::max(1, std::min(100, limit))));
+	if (timeout != 0)
+		args.emplace_back("timeout=" + std::to_string(timeout));
+	if (allowedUpdates)
+		args.emplace_back("update_types=" + StringTools::join(*allowedUpdates, ','));
+	auto argsStr = StringTools::join(args, '&');
+	std::string url = "updates";
+	if (!argsStr.empty())
+		url += '?' + argsStr;
 
-    return _botTypeParser.parseJsonAndGetUpdates(sendRequest("updates", args));
+    return _botTypeParser.parseJsonAndGetUpdates(sendRequest(url));
 }
 
-bool Api::setWebhook(const std::string& url,
-                     const StringArrayPtr& allowedUpdates,
-                     const std::string& secretToken) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(7);
-
-    args.emplace_back("url", url);
-    if (allowedUpdates != nullptr) {
-        auto allowedUpdatesJson = _botTypeParser.parseArray<std::string>(
-            [] (const std::string& s)->std::string {
-            return s;
-        }, *allowedUpdates);
-        args.emplace_back("update_types", allowedUpdatesJson);
-    }
-    if (!secretToken.empty()) {
-        args.emplace_back("secret", secretToken);
-    }
-
-    return sendRequest("subscriptions", args).get<bool>("success", false);
+bool Api::setWebhook(const SubscriptionRequestBody::Ptr& msg) const
+{
+    auto json = _botTypeParser.parseSubscriptionRequestBody(msg);
+    return sendRequest("subscriptions", json).get<bool>("success", false);
 }
 
 bool Api::deleteWebhook(const std::string& url) const {

@@ -155,6 +155,7 @@
 #include "maxbot/types/Invoice.h"
 #include "maxbot/types/PreCheckoutQuery.h"
 #include "maxbot/types/GenericReply.h"
+#include "maxbot/types/SubscriptionRequestBody.h"
 
 namespace MaxBot {
 
@@ -166,6 +167,7 @@ public:
 
     static Chat::Ptr parseJsonAndGetChat(const boost::property_tree::ptree& data);
 
+	static std::string parseSubscriptionRequestBody(const SubscriptionRequestBody::Ptr& msg);
 	static std::string parseNewMessageBody(const NewMessageBody::Ptr& msg);
     static std::string parseAttachmentRequest(const AttachmentRequest::Ptr& object);
     static std::string parseNewMessageLink(const NewMessageLink::Ptr& object);
