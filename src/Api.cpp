@@ -2,6 +2,7 @@
 #include "maxbot/tools/StringTools.h"
 
 #include <chrono>
+#include <iostream>
 #include <stdexcept>
 #include <thread>
 
@@ -85,14 +86,20 @@ bool Api::close() const {
     return sendRequest("close").get<bool>("", false);
 }
 
-Message::Ptr Api::sendMessage(std::int64_t chatId,
+Message::Ptr Api::sendMessage(int64_t chatId, int64_t userId,
                              NewMessageBody::Ptr msg,
                              bool disableLinkPreview) const
 {
-	if (!msg)
-		return {};
+	if (!msg) return {};
 
-	auto url = "messages?chat_id=" + std::to_string(chatId) + "&disable_link_preview=" + (disableLinkPreview ? '1' : '0');
+	std::vector<std::string> args;
+	if (chatId != 0)
+		args.emplace_back("chat_id=" + std::to_string(chatId));
+	if (userId != 0)
+		args.emplace_back("user_id=" + std::to_string(userId));
+	if (disableLinkPreview)
+		args.emplace_back("disable_link_preview=true");
+	auto url = "messages?" + StringTools::join(args, '&');
     auto json = _botTypeParser.parseNewMessageBody(msg);
     return _botTypeParser.parseJsonAndGetMessage(sendRequest(url, json).get_child("message"));
 }
