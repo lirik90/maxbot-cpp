@@ -1,105 +1,81 @@
-#include "tgbot/Api.h"
+#include "maxbot/Api.h"
+#include "maxbot/tools/StringTools.h"
 
 #include <chrono>
+#include <iostream>
+#include <stdexcept>
 #include <thread>
 
-namespace TgBot {
+namespace MaxBot {
 
-Api::Api(std::string token, const HttpClient& httpClient, const std::string& url)
-    : _httpClient(httpClient), _token(std::move(token)), _tgTypeParser(), _url(url) {
+Api::Api(const HttpClient& httpClient, const std::string& url)
+	: _httpClient(httpClient)
+	, _botTypeParser()
+	, _url([&] {
+		if (url.empty())
+			throw std::runtime_error("url is empty");
+		if (url.back() != '/')
+			return url + '/';
+		return url;
+	}())
+{ }
+
+void checkSimpleQueryResult(const boost::property_tree::ptree& data)
+{
+	if (!data.get<bool>("success", false))
+		throw BotException("SimpleResult message: " + data.get("message", ""), BotException::ErrorCode::Undefined);
 }
 
-std::vector<Update::Ptr> Api::getUpdates(std::int32_t offset,
-                                         std::int32_t limit,
-                                         std::int32_t timeout,
-                                         const StringArrayPtr& allowedUpdates) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
+Updates::Ptr Api::getUpdates(
+	std::int64_t marker,
+    std::int32_t limit,
+    std::int32_t timeout,
+    const StringArrayPtr& allowedUpdates) const {
 
-    if (offset != 0) {
-        args.emplace_back("offset", offset);
-    }
-    if (limit != 100) {
-        args.emplace_back("limit", std::max(1, std::min(100, limit)));
-    }
-    if (timeout != 0) {
-        args.emplace_back("timeout", timeout);
-    }
-    if (allowedUpdates != nullptr) {
-        std::string allowedUpdatesJson = _tgTypeParser.parseArray<std::string>(
-            [] (const std::string& s)->std::string {
-            return '"' + s + '"';
-        }, *allowedUpdates);
-        args.emplace_back("allowed_updates", allowedUpdatesJson);
-    }
+	std::vector<std::string> args;
+	args.reserve(4);
+	if (marker != 0)
+		args.emplace_back("marker=" + std::to_string(marker));
+	if (limit != 100)
+		args.emplace_back("limit=" + std::to_string(std::max(1, std::min(100, limit))));
+	if (timeout != 0)
+		args.emplace_back("timeout=" + std::to_string(timeout));
+	if (allowedUpdates)
+		args.emplace_back("update_types=" + StringTools::join(*allowedUpdates, ','));
+	auto argsStr = StringTools::join(args, '&');
+	std::string url = "updates";
+	if (!argsStr.empty())
+		url += '?' + argsStr;
 
-    return _tgTypeParser.parseJsonAndGetArray<Update>(&TgTypeParser::parseJsonAndGetUpdate, sendRequest("getUpdates", args));
+    return _botTypeParser.parseJsonAndGetUpdates(sendRequest(url));
 }
 
-bool Api::setWebhook(const std::string& url,
-                     InputFile::Ptr certificate,
-                     std::int32_t maxConnections,
-                     const StringArrayPtr& allowedUpdates,
-                     const std::string& ipAddress,
-                     bool dropPendingUpdates,
-                     const std::string& secretToken) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(7);
-
-    args.emplace_back("url", url);
-    if (certificate != nullptr) {
-        args.emplace_back("certificate", certificate->data, true, certificate->mimeType, certificate->fileName);
-    }
-    if (!ipAddress.empty()) {
-        args.emplace_back("ip_address", ipAddress);
-    }
-    if (maxConnections != 40) {
-        args.emplace_back("max_connections", std::max(1, std::min(100, maxConnections)));
-    }
-    if (allowedUpdates != nullptr) {
-        auto allowedUpdatesJson = _tgTypeParser.parseArray<std::string>(
-            [] (const std::string& s)->std::string {
-            return s;
-        }, *allowedUpdates);
-        args.emplace_back("allowed_updates", allowedUpdatesJson);
-    }
-    if (dropPendingUpdates) {
-        args.emplace_back("drop_pending_updates", dropPendingUpdates);
-    }
-    if (!secretToken.empty()) {
-        args.emplace_back("secret_token", secretToken);
-    }
-
-    return sendRequest("setWebhook", args).get<bool>("", false);
+void Api::setWebhook(const SubscriptionRequestBody::Ptr& msg) const
+{
+    auto json = _botTypeParser.parseSubscriptionRequestBody(msg);
+    checkSimpleQueryResult(sendRequest("subscriptions", json));
 }
 
-bool Api::deleteWebhook(bool dropPendingUpdates) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    if (dropPendingUpdates) {
-        args.emplace_back("drop_pending_updates", dropPendingUpdates);
-    }
-
-    return sendRequest("deleteWebhook", args).get<bool>("", false);
+void Api::deleteWebhook(const std::string& url) const {
+    checkSimpleQueryResult(sendRequest("subscriptions?url="+StringTools::urlEncode(url), std::vector<HttpReqArg>{}, "DELETE"));
 }
 
 WebhookInfo::Ptr Api::getWebhookInfo() const {
-    boost::property_tree::ptree p = sendRequest("getWebhookInfo");
+    boost::property_tree::ptree p = sendRequest("subscriptions");
 
     if (!p.get_child_optional("url")) {
         return nullptr;
     }
 
     if (p.get<std::string>("url", "") != std::string("")) {
-        return _tgTypeParser.parseJsonAndGetWebhookInfo(p);
+        return _botTypeParser.parseJsonAndGetWebhookInfo(p);
     } else {
         return nullptr;
     }
 }
 
 User::Ptr Api::getMe() const {
-    return _tgTypeParser.parseJsonAndGetUser(sendRequest("getMe"));
+    return _botTypeParser.parseJsonAndGetUser(sendRequest("me"));
 }
 
 bool Api::logOut() const {
@@ -110,51 +86,32 @@ bool Api::close() const {
     return sendRequest("close").get<bool>("", false);
 }
 
-Message::Ptr Api::sendMessage(boost::variant<std::int64_t, std::string> chatId,
-                              const std::string& text,
-                              LinkPreviewOptions::Ptr linkPreviewOptions,
-                              ReplyParameters::Ptr replyParameters,
-                              GenericReply::Ptr replyMarkup,
-                              const std::string& parseMode,
-                              bool disableNotification,
-                              const std::vector<MessageEntity::Ptr>& entities,
-                              std::int32_t messageThreadId,
-                              bool protectContent,
-                              const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(11);
+Message::Ptr Api::sendMessage(int64_t chatId, int64_t userId,
+                             NewMessageBody::Ptr msg,
+                             bool disableLinkPreview) const
+{
+	if (!msg) return {};
 
-    if (!businessConnectionId.empty()) {
-        args.emplace_back("business_connection_id", businessConnectionId);
-    }
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    args.emplace_back("text", text);
-    if (!parseMode.empty()) {
-        args.emplace_back("parse_mode", parseMode);
-    }
-    if (!entities.empty()) {
-        args.emplace_back("entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, entities));
-    }
-    if (linkPreviewOptions != nullptr) {
-        args.emplace_back("link_preview_options", _tgTypeParser.parseLinkPreviewOptions(linkPreviewOptions));
-    }
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
+	std::vector<std::string> args;
+	if (chatId != 0)
+		args.emplace_back("chat_id=" + std::to_string(chatId));
+	if (userId != 0)
+		args.emplace_back("user_id=" + std::to_string(userId));
+	if (disableLinkPreview)
+		args.emplace_back("disable_link_preview=true");
+	auto url = "messages?" + StringTools::join(args, '&');
+    auto json = _botTypeParser.parseNewMessageBody(msg);
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest(url, json).get_child("message"));
+}
 
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendMessage", args));
+void Api::editMessage(const std::string& msgId, NewMessageBody::Ptr msg) const
+{
+	if (!msg)
+		return;
+
+	auto url = "messages?message_id=" + msgId;
+    auto json = _botTypeParser.parseNewMessageBody(msg);
+    checkSimpleQueryResult(sendRequest(url, json, "PUT"));
 }
 
 Message::Ptr Api::forwardMessage(boost::variant<std::int64_t, std::string> chatId,
@@ -179,7 +136,7 @@ Message::Ptr Api::forwardMessage(boost::variant<std::int64_t, std::string> chatI
     }
     args.emplace_back("message_id", messageId);
 
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("forwardMessage", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("forwardMessage", args));
 }
 
 std::vector<MessageId::Ptr> Api::forwardMessages(boost::variant<std::int64_t, std::string> chatId,
@@ -194,7 +151,7 @@ std::vector<MessageId::Ptr> Api::forwardMessages(boost::variant<std::int64_t, st
     args.emplace_back("chat_id", chatId);
     args.emplace_back("from_chat_id", fromChatId);
     if (!messageIds.empty()) {
-        args.emplace_back("message_ids", _tgTypeParser.parseArray<std::int32_t>(
+        args.emplace_back("message_ids", _botTypeParser.parseArray<std::int32_t>(
             [] (const std::int32_t& i)->std::int32_t {
             return i;
         }, messageIds));
@@ -209,7 +166,7 @@ std::vector<MessageId::Ptr> Api::forwardMessages(boost::variant<std::int64_t, st
         args.emplace_back("protect_content", protectContent);
     }
 
-    return _tgTypeParser.parseJsonAndGetArray<MessageId>(&TgTypeParser::parseJsonAndGetMessageId, sendRequest("forwardMessages", args));
+    return _botTypeParser.parseJsonAndGetArray<MessageId>(&BotTypeParser::parseJsonAndGetMessageId, sendRequest("forwardMessages", args));
 }
 
 MessageId::Ptr Api::copyMessage(boost::variant<std::int64_t, std::string> chatId,
@@ -239,7 +196,7 @@ MessageId::Ptr Api::copyMessage(boost::variant<std::int64_t, std::string> chatId
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (disableNotification) {
         args.emplace_back("disable_notification", disableNotification);
@@ -248,13 +205,13 @@ MessageId::Ptr Api::copyMessage(boost::variant<std::int64_t, std::string> chatId
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
-    return _tgTypeParser.parseJsonAndGetMessageId(sendRequest("copyMessage", args));
+    return _botTypeParser.parseJsonAndGetMessageId(sendRequest("copyMessage", args));
 }
 
 std::vector<MessageId::Ptr> Api::copyMessages(boost::variant<std::int64_t, std::string> chatId,
@@ -271,7 +228,7 @@ std::vector<MessageId::Ptr> Api::copyMessages(boost::variant<std::int64_t, std::
     args.emplace_back("from_chat_id", fromChatId);
 
     if (!messageIds.empty()) {
-        args.emplace_back("message_ids", _tgTypeParser.parseArray<std::int32_t>(
+        args.emplace_back("message_ids", _botTypeParser.parseArray<std::int32_t>(
             [] (const std::int32_t& i)->std::int32_t {
             return i;
         }, messageIds));
@@ -289,7 +246,7 @@ std::vector<MessageId::Ptr> Api::copyMessages(boost::variant<std::int64_t, std::
         args.emplace_back("remove_caption", removeCaption);
     }
 
-    return _tgTypeParser.parseJsonAndGetArray<MessageId>(&TgTypeParser::parseJsonAndGetMessageId, sendRequest("copyMessages", args));
+    return _botTypeParser.parseJsonAndGetArray<MessageId>(&BotTypeParser::parseJsonAndGetMessageId, sendRequest("copyMessages", args));
 }
 
 Message::Ptr Api::sendPhoto(boost::variant<std::int64_t, std::string> chatId,
@@ -327,7 +284,7 @@ Message::Ptr Api::sendPhoto(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (hasSpoiler) {
         args.emplace_back("has_spoiler", hasSpoiler);
@@ -339,13 +296,13 @@ Message::Ptr Api::sendPhoto(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup != nullptr) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendPhoto", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendPhoto", args));
 }
 
 Message::Ptr Api::sendAudio(boost::variant<std::int64_t, std::string> chatId,
@@ -386,7 +343,7 @@ Message::Ptr Api::sendAudio(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (duration) {
         args.emplace_back("duration", duration);
@@ -413,13 +370,13 @@ Message::Ptr Api::sendAudio(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendAudio", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendAudio", args));
 }
 
 Message::Ptr Api::sendDocument(boost::variant<std::int64_t, std::string> chatId,
@@ -467,7 +424,7 @@ Message::Ptr Api::sendDocument(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (disableContentTypeDetection) {
         args.emplace_back("disable_content_type_detection", disableContentTypeDetection);
@@ -479,13 +436,13 @@ Message::Ptr Api::sendDocument(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendDocument", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendDocument", args));
 }
 
 Message::Ptr Api::sendVideo(boost::variant<std::int64_t, std::string> chatId,
@@ -546,7 +503,7 @@ Message::Ptr Api::sendVideo(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (hasSpoiler) {
         args.emplace_back("has_spoiler", hasSpoiler);
@@ -561,13 +518,13 @@ Message::Ptr Api::sendVideo(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup != nullptr) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendVideo", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendVideo", args));
 }
 
 Message::Ptr Api::sendAnimation(boost::variant<std::int64_t, std::string> chatId,
@@ -627,7 +584,7 @@ Message::Ptr Api::sendAnimation(boost::variant<std::int64_t, std::string> chatId
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (hasSpoiler) {
         args.emplace_back("has_spoiler", hasSpoiler);
@@ -639,13 +596,13 @@ Message::Ptr Api::sendAnimation(boost::variant<std::int64_t, std::string> chatId
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup != nullptr) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendAnimation", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendAnimation", args));
 }
 
 Message::Ptr Api::sendVoice(boost::variant<std::int64_t, std::string> chatId,
@@ -683,7 +640,7 @@ Message::Ptr Api::sendVoice(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (duration) {
         args.emplace_back("duration", duration);
@@ -695,13 +652,13 @@ Message::Ptr Api::sendVoice(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendVoice", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendVoice", args));
 }
 
 Message::Ptr Api::sendVideoNote(boost::variant<std::int64_t, std::string> chatId,
@@ -753,13 +710,13 @@ Message::Ptr Api::sendVideoNote(boost::variant<std::int64_t, std::string> chatId
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendVideoNote", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendVideoNote", args));
 }
 
 std::vector<Message::Ptr> Api::sendMediaGroup(boost::variant<std::int64_t, std::string> chatId,
@@ -779,7 +736,7 @@ std::vector<Message::Ptr> Api::sendMediaGroup(boost::variant<std::int64_t, std::
     if (messageThreadId != 0) {
         args.emplace_back("message_thread_id", messageThreadId);
     }
-    args.emplace_back("media", _tgTypeParser.parseArray<InputMedia>(&TgTypeParser::parseInputMedia, media));
+    args.emplace_back("media", _botTypeParser.parseArray<InputMedia>(&BotTypeParser::parseInputMedia, media));
     if (disableNotification) {
         args.emplace_back("disable_notification", disableNotification);
     }
@@ -787,10 +744,10 @@ std::vector<Message::Ptr> Api::sendMediaGroup(boost::variant<std::int64_t, std::
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
 
-    return _tgTypeParser.parseJsonAndGetArray<Message>(&TgTypeParser::parseJsonAndGetMessage, sendRequest("sendMediaGroup", args));
+    return _botTypeParser.parseJsonAndGetArray<Message>(&BotTypeParser::parseJsonAndGetMessage, sendRequest("sendMediaGroup", args));
 }
 
 Message::Ptr Api::sendLocation(boost::variant<std::int64_t, std::string> chatId,
@@ -837,13 +794,13 @@ Message::Ptr Api::sendLocation(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendLocation", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendLocation", args));
 }
 
 Message::Ptr Api::editMessageLiveLocation(float latitude,
@@ -885,10 +842,10 @@ Message::Ptr Api::editMessageLiveLocation(float latitude,
         args.emplace_back("proximity_alert_radius", proximityAlertRadius);
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseInlineKeyboardMarkup(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseInlineKeyboardMarkup(replyMarkup));
     }
 
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("editMessageLiveLocation", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("editMessageLiveLocation", args));
 }
 
 Message::Ptr Api::stopMessageLiveLocation(boost::variant<std::int64_t, std::string> chatId,
@@ -914,67 +871,10 @@ Message::Ptr Api::stopMessageLiveLocation(boost::variant<std::int64_t, std::stri
         args.emplace_back("inline_message_id", inlineMessageId);
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseInlineKeyboardMarkup(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseInlineKeyboardMarkup(replyMarkup));
     }
 
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("stopMessageLiveLocation", args));
-}
-
-Message::Ptr Api::sendVenue(boost::variant<std::int64_t, std::string> chatId,
-                            float latitude,
-                            float longitude,
-                            const std::string& title,
-                            const std::string& address,
-                            const std::string& foursquareId,
-                            const std::string& foursquareType,
-                            bool disableNotification,
-                            ReplyParameters::Ptr replyParameters,
-                            GenericReply::Ptr replyMarkup,
-                            const std::string& googlePlaceId,
-                            const std::string& googlePlaceType,
-                            std::int32_t messageThreadId,
-                            bool protectContent,
-                            const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(15);
-
-    if (!businessConnectionId.empty()) {
-        args.emplace_back("business_connection_id", businessConnectionId);
-    }
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    args.emplace_back("latitude", latitude);
-    args.emplace_back("longitude", longitude);
-    args.emplace_back("title", title);
-    args.emplace_back("address", address);
-    if (!foursquareId.empty()) {
-        args.emplace_back("foursquare_id", foursquareId);
-    }
-    if (!foursquareType.empty()) {
-        args.emplace_back("foursquare_type", foursquareType);
-    }
-    if (!googlePlaceId.empty()) {
-        args.emplace_back("google_place_id", googlePlaceId);
-    }
-    if (!googlePlaceType.empty()) {
-        args.emplace_back("google_place_type", googlePlaceType);
-    }
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
-    
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendVenue", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("stopMessageLiveLocation", args));
 }
 
 Message::Ptr Api::sendContact(boost::variant<std::int64_t, std::string> chatId,
@@ -1013,13 +913,13 @@ Message::Ptr Api::sendContact(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
     
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendContact", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendContact", args));
 }
 
 Message::Ptr Api::sendPoll(boost::variant<std::int64_t, std::string> chatId,
@@ -1052,7 +952,7 @@ Message::Ptr Api::sendPoll(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("message_thread_id", messageThreadId);
     }
     args.emplace_back("question", question);
-    args.emplace_back("options", _tgTypeParser.parseArray<std::string>(
+    args.emplace_back("options", _botTypeParser.parseArray<std::string>(
         [](const std::string& option)->std::string {
         return "\"" + StringTools::escapeJsonString(option) + "\"";
     }, options));
@@ -1075,7 +975,7 @@ Message::Ptr Api::sendPoll(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("explanation_parse_mode", explanationParseMode);
     }
     if (!explanationEntities.empty()) {
-        args.emplace_back("explanation_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, explanationEntities));
+        args.emplace_back("explanation_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, explanationEntities));
     }
     if (openPeriod != 0) {
         args.emplace_back("open_period", openPeriod);
@@ -1093,50 +993,13 @@ Message::Ptr Api::sendPoll(boost::variant<std::int64_t, std::string> chatId,
         args.emplace_back("protect_content", protectContent);
     }
     if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
+        args.emplace_back("reply_parameters", _botTypeParser.parseReplyParameters(replyParameters));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendPoll", args));
-}
-
-Message::Ptr Api::sendDice(boost::variant<std::int64_t, std::string> chatId,
-                           bool disableNotification,
-                           ReplyParameters::Ptr replyParameters,
-                           GenericReply::Ptr replyMarkup,
-                           const std::string& emoji,
-                           std::int32_t messageThreadId,
-                           bool protectContent,
-                           const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(8);
-
-    if (!businessConnectionId.empty()) {
-        args.emplace_back("business_connection_id", businessConnectionId);
-    }
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    if (!emoji.empty()) {
-        args.emplace_back("emoji", emoji);
-    }
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
-
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendDice", args));
+    return _botTypeParser.parseJsonAndGetMessage(sendRequest("sendPoll", args));
 }
 
 bool Api::setMessageReaction(boost::variant<std::int64_t, std::string> chatId,
@@ -1149,7 +1012,7 @@ bool Api::setMessageReaction(boost::variant<std::int64_t, std::string> chatId,
     args.emplace_back("chat_id", chatId);
     args.emplace_back("message_id", messageId);
     if (!reaction.empty()) {
-        args.emplace_back("reaction", _tgTypeParser.parseArray<ReactionType>(&TgTypeParser::parseReactionType, reaction));
+        args.emplace_back("reaction", _botTypeParser.parseArray<ReactionType>(&BotTypeParser::parseReactionType, reaction));
     }
     if (isBig) {
         args.emplace_back("is_big", isBig);
@@ -1191,7 +1054,7 @@ UserProfilePhotos::Ptr Api::getUserProfilePhotos(std::int64_t userId,
         args.emplace_back("limit", std::max(1, std::min(100, limit)));
     }
 
-    return _tgTypeParser.parseJsonAndGetUserProfilePhotos(sendRequest("getUserProfilePhotos", args));
+    return _botTypeParser.parseJsonAndGetUserProfilePhotos(sendRequest("getUserProfilePhotos", args));
 }
 
 File::Ptr Api::getFile(const std::string& fileId) const {
@@ -1200,7 +1063,7 @@ File::Ptr Api::getFile(const std::string& fileId) const {
 
     args.emplace_back("file_id", fileId);
 
-    return _tgTypeParser.parseJsonAndGetFile(sendRequest("getFile", args));
+    return _botTypeParser.parseJsonAndGetFile(sendRequest("getFile", args));
 }
 
 bool Api::banChatMember(boost::variant<std::int64_t, std::string> chatId,
@@ -1239,7 +1102,7 @@ bool Api::unbanChatMember(boost::variant<std::int64_t, std::string> chatId,
 
 bool Api::restrictChatMember(boost::variant<std::int64_t, std::string> chatId,
                              std::int64_t userId,
-                             TgBot::ChatPermissions::Ptr permissions,
+                             MaxBot::ChatPermissions::Ptr permissions,
                              std::uint32_t untilDate,
                              bool useIndependentChatPermissions) const {
     std::vector<HttpReqArg> args;
@@ -1247,7 +1110,7 @@ bool Api::restrictChatMember(boost::variant<std::int64_t, std::string> chatId,
 
     args.emplace_back("chat_id", chatId);
     args.emplace_back("user_id", userId);
-    args.emplace_back("permissions", _tgTypeParser.parseChatPermissions(permissions));
+    args.emplace_back("permissions", _botTypeParser.parseChatPermissions(permissions));
     if (useIndependentChatPermissions != false) {
         args.emplace_back("use_independent_chat_permissions", useIndependentChatPermissions);
     }
@@ -1371,7 +1234,7 @@ bool Api::setChatPermissions(boost::variant<std::int64_t, std::string> chatId,
     args.reserve(3);
 
     args.emplace_back("chat_id", chatId);
-    args.emplace_back("permissions", _tgTypeParser.parseChatPermissions(permissions));
+    args.emplace_back("permissions", _botTypeParser.parseChatPermissions(permissions));
     if (useIndependentChatPermissions) {
         args.emplace_back("use_independent_chat_permissions", useIndependentChatPermissions);
     }
@@ -1410,7 +1273,7 @@ ChatInviteLink::Ptr Api::createChatInviteLink(boost::variant<std::int64_t, std::
         args.emplace_back("createsJoinRequest", createsJoinRequest);
     }
 
-    return _tgTypeParser.parseJsonAndGetChatInviteLink(sendRequest("createChatInviteLink", args));
+    return _botTypeParser.parseJsonAndGetChatInviteLink(sendRequest("createChatInviteLink", args));
 }
 
 ChatInviteLink::Ptr Api::editChatInviteLink(boost::variant<std::int64_t, std::string> chatId,
@@ -1437,7 +1300,7 @@ ChatInviteLink::Ptr Api::editChatInviteLink(boost::variant<std::int64_t, std::st
         args.emplace_back("createsJoinRequest", createsJoinRequest);
     }
 
-    return _tgTypeParser.parseJsonAndGetChatInviteLink(sendRequest("editChatInviteLink", args));
+    return _botTypeParser.parseJsonAndGetChatInviteLink(sendRequest("editChatInviteLink", args));
 }
 
 ChatInviteLink::Ptr Api::revokeChatInviteLink(boost::variant<std::int64_t, std::string> chatId,
@@ -1448,7 +1311,7 @@ ChatInviteLink::Ptr Api::revokeChatInviteLink(boost::variant<std::int64_t, std::
     args.emplace_back("chat_id", chatId);
     args.emplace_back("invite_link", inviteLink);
 
-    return _tgTypeParser.parseJsonAndGetChatInviteLink(sendRequest("revokeChatInviteLink", args));
+    return _botTypeParser.parseJsonAndGetChatInviteLink(sendRequest("revokeChatInviteLink", args));
 }
 
 bool Api::approveChatJoinRequest(boost::variant<std::int64_t, std::string> chatId,
@@ -1569,7 +1432,7 @@ Chat::Ptr Api::getChat(boost::variant<std::int64_t, std::string> chatId) const {
 
     args.emplace_back("chat_id", chatId);
 
-    return _tgTypeParser.parseJsonAndGetChat(sendRequest("getChat", args));
+    return _botTypeParser.parseJsonAndGetChat(sendRequest("getChat", args));
 }
 
 std::vector<ChatMember::Ptr> Api::getChatAdministrators(boost::variant<std::int64_t, std::string> chatId) const {
@@ -1578,7 +1441,7 @@ std::vector<ChatMember::Ptr> Api::getChatAdministrators(boost::variant<std::int6
 
     args.emplace_back("chat_id", chatId);
 
-    return _tgTypeParser.parseJsonAndGetArray<ChatMember>(&TgTypeParser::parseJsonAndGetChatMember, sendRequest("getChatAdministrators", args));
+    return _botTypeParser.parseJsonAndGetArray<ChatMember>(&BotTypeParser::parseJsonAndGetChatMember, sendRequest("getChatAdministrators", args));
 }
 
 int32_t Api::getChatMemberCount(boost::variant<std::int64_t, std::string> chatId) const {
@@ -1598,200 +1461,13 @@ ChatMember::Ptr Api::getChatMember(boost::variant<std::int64_t, std::string> cha
     args.emplace_back("chat_id", chatId);
     args.emplace_back("user_id", userId);
 
-    return _tgTypeParser.parseJsonAndGetChatMember(sendRequest("getChatMember", args));
+    return _botTypeParser.parseJsonAndGetChatMember(sendRequest("getChatMember", args));
 }
 
-bool Api::setChatStickerSet(boost::variant<std::int64_t, std::string> chatId,
-                            const std::string& stickerSetName) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("sticker_set_name	", stickerSetName);
-
-    return sendRequest("setChatStickerSet", args).get<bool>("", false);
-}
-
-bool Api::deleteChatStickerSet(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("deleteChatStickerSet", args).get<bool>("", false);
-}
-
-std::vector<Sticker::Ptr> Api::getForumTopicIconStickers() const {
-    return _tgTypeParser.parseJsonAndGetArray<Sticker>(&TgTypeParser::parseJsonAndGetSticker, sendRequest("getForumTopicIconStickers"));
-}
-
-ForumTopic::Ptr Api::createForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                                      const std::string& name,
-                                      std::int32_t iconColor,
-                                      const std::string& iconCustomEmojiId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("name", name);
-    if (iconColor != 0) {
-        args.emplace_back("icon_color", iconColor);
-    }
-    if (!iconCustomEmojiId.empty()) {
-        args.emplace_back("icon_custom_emoji_id", iconCustomEmojiId);
-    }
-
-    return _tgTypeParser.parseJsonAndGetForumTopic(sendRequest("createForumTopic", args));
-}
-
-bool Api::editForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                         std::int32_t messageThreadId,
-                         const std::string& name,
-                         boost::variant<std::int32_t, std::string> iconCustomEmojiId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("message_thread_id", messageThreadId);
-    if (!name.empty()) {
-        args.emplace_back("name", name);
-    }
-    if (iconCustomEmojiId.which() == 0) {   // std::int32_t
-        if (boost::get<std::int32_t>(iconCustomEmojiId) != 0) {
-            args.emplace_back("icon_custom_emoji_id", iconCustomEmojiId);
-        }
-    } else {    // std::string
-        if (boost::get<std::string>(iconCustomEmojiId) != "") {
-            args.emplace_back("icon_custom_emoji_id", iconCustomEmojiId);
-        }
-    }
-
-    return sendRequest("editForumTopic", args).get<bool>("", false);
-}
-
-bool Api::closeForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                          std::int32_t messageThreadId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("message_thread_id", messageThreadId);
-
-    return sendRequest("closeForumTopic", args).get<bool>("", false);
- }
-
-bool Api::reopenForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                           std::int32_t messageThreadId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("message_thread_id", messageThreadId);
-
-    return sendRequest("reopenForumTopic", args).get<bool>("", false);
-}
-
-bool Api::deleteForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                           std::int32_t messageThreadId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("message_thread_id", messageThreadId);
-
-    return sendRequest("deleteForumTopic", args).get<bool>("", false);
-}
-
-bool Api::unpinAllForumTopicMessages(boost::variant<std::int64_t, std::string> chatId,
-                                     std::int32_t messageThreadId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("message_thread_id", messageThreadId);
-
-    return sendRequest("unpinAllForumTopicMessages", args).get<bool>("", false);
-}
-
-bool Api::editGeneralForumTopic(boost::variant<std::int64_t, std::string> chatId,
-                                std::string name) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("chat_id", chatId);
-    args.emplace_back("name", name);
-
-    return sendRequest("editGeneralForumTopic", args).get<bool>("", false);
-}
-
-bool Api::closeGeneralForumTopic(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("closeGeneralForumTopic", args).get<bool>("", false);
-}
-
-bool Api::reopenGeneralForumTopic(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("reopenGeneralForumTopic", args).get<bool>("", false);
-}
-
-bool Api::hideGeneralForumTopic(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("hideGeneralForumTopic", args).get<bool>("", false);
-}
-
-bool Api::unhideGeneralForumTopic(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("unhideGeneralForumTopic", args).get<bool>("", false);
-}
-
-bool Api::unpinAllGeneralForumTopicMessages(boost::variant<std::int64_t, std::string> chatId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("chat_id", chatId);
-
-    return sendRequest("unpinAllGeneralForumTopicMessages", args).get<bool>("", false);
-}
-
-bool Api::answerCallbackQuery(const std::string& callbackQueryId,
-                              const std::string& text,
-                              bool showAlert,
-                              const std::string& url,
-                              std::int32_t cacheTime) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(5);
-
-    args.emplace_back("callback_query_id", callbackQueryId);
-    if (!text.empty()) {
-        args.emplace_back("text", text);
-    }
-    if (showAlert) {
-        args.emplace_back("show_alert", showAlert);
-    }
-    if (!url.empty()) {
-        args.emplace_back("url", url);
-    }
-    if (cacheTime) {
-        args.emplace_back("cache_time", cacheTime);
-    }
-
-    return sendRequest("answerCallbackQuery", args).get<bool>("", false);
+void Api::answerCallbackQuery(const std::string& callbackId, CallbackAnswer::Ptr answer) const {
+	auto url = "answers?callback_id=" + callbackId;
+    auto json = _botTypeParser.parseCallbackAnswer(answer);
+    checkSimpleQueryResult(sendRequest(url, json));
 }
 
 UserChatBoosts::Ptr Api::getUserChatBoosts(boost::variant<std::int64_t, std::string> chatId,
@@ -1802,16 +1478,7 @@ UserChatBoosts::Ptr Api::getUserChatBoosts(boost::variant<std::int64_t, std::str
     args.emplace_back("chat_id", chatId);
     args.emplace_back("user_id", userId);
 
-    return _tgTypeParser.parseJsonAndGetUserChatBoosts(sendRequest("getUserChatBoosts", args));
-}
-
-BusinessConnection::Ptr Api::getBusinessConnection(const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("business_connection_id", businessConnectionId);
-
-    return _tgTypeParser.parseJsonAndGetBusinessConnection(sendRequest("getBusinessConnection", args));
+    return _botTypeParser.parseJsonAndGetUserChatBoosts(sendRequest("getUserChatBoosts", args));
 }
 
 bool Api::setMyCommands(const std::vector<BotCommand::Ptr>& commands,
@@ -1820,9 +1487,9 @@ bool Api::setMyCommands(const std::vector<BotCommand::Ptr>& commands,
     std::vector<HttpReqArg> args;
     args.reserve(3);
 
-    args.emplace_back("commands", _tgTypeParser.parseArray<BotCommand>(&TgTypeParser::parseBotCommand, commands));
+    args.emplace_back("commands", _botTypeParser.parseArray<BotCommand>(&BotTypeParser::parseBotCommand, commands));
     if (scope != nullptr) {
-        args.emplace_back("scope", _tgTypeParser.parseBotCommandScope(scope));
+        args.emplace_back("scope", _botTypeParser.parseBotCommandScope(scope));
     }
     if (!languageCode.empty()) {
         args.emplace_back("language_code", languageCode);
@@ -1837,7 +1504,7 @@ bool Api::deleteMyCommands(BotCommandScope::Ptr scope,
     args.reserve(2);
 
     if (scope != nullptr) {
-        args.emplace_back("scope", _tgTypeParser.parseBotCommandScope(scope));
+        args.emplace_back("scope", _botTypeParser.parseBotCommandScope(scope));
     }
     if (!languageCode.empty()) {
         args.emplace_back("language_code", languageCode);
@@ -1852,13 +1519,13 @@ std::vector<BotCommand::Ptr> Api::getMyCommands(BotCommandScope::Ptr scope,
     args.reserve(2);
 
     if (scope != nullptr) {
-        args.emplace_back("scope", _tgTypeParser.parseBotCommandScope(scope));
+        args.emplace_back("scope", _botTypeParser.parseBotCommandScope(scope));
     }
     if (!languageCode.empty()) {
         args.emplace_back("language_code", languageCode);
     }
 
-    return _tgTypeParser.parseJsonAndGetArray<BotCommand>(&TgTypeParser::parseJsonAndGetBotCommand, sendRequest("getMyCommands", args));
+    return _botTypeParser.parseJsonAndGetArray<BotCommand>(&BotTypeParser::parseJsonAndGetBotCommand, sendRequest("getMyCommands", args));
 }
 
 bool Api::setMyName(const std::string& name,
@@ -1884,7 +1551,7 @@ BotName::Ptr Api::getMyName(const std::string& languageCode) const {
         args.emplace_back("language_code", languageCode);
     }
 
-    return _tgTypeParser.parseJsonAndGetBotName(sendRequest("getMyName", args));
+    return _botTypeParser.parseJsonAndGetBotName(sendRequest("getMyName", args));
 }
 
 bool Api::setMyDescription(const std::string& description,
@@ -1910,7 +1577,7 @@ BotDescription::Ptr Api::getMyDescription(const std::string& languageCode) const
         args.emplace_back("language_code", languageCode);
     }
 
-    return _tgTypeParser.parseJsonAndGetBotDescription(sendRequest("getMyDescription", args));
+    return _botTypeParser.parseJsonAndGetBotDescription(sendRequest("getMyDescription", args));
 }
 
 bool Api::setMyShortDescription(const std::string& shortDescription,
@@ -1936,7 +1603,7 @@ BotShortDescription::Ptr Api::getMyShortDescription(const std::string& languageC
         args.emplace_back("language_code", languageCode);
     }
 
-    return _tgTypeParser.parseJsonAndGetBotShortDescription(sendRequest("getMyShortDescription", args));
+    return _botTypeParser.parseJsonAndGetBotShortDescription(sendRequest("getMyShortDescription", args));
 }
 
 bool Api::setChatMenuButton(std::int64_t chatId,
@@ -1948,7 +1615,7 @@ bool Api::setChatMenuButton(std::int64_t chatId,
         args.emplace_back("chat_id", chatId);
     }
     if (menuButton != nullptr) {
-        args.emplace_back("menu_button", _tgTypeParser.parseMenuButton(menuButton));
+        args.emplace_back("menu_button", _botTypeParser.parseMenuButton(menuButton));
     }
 
     return sendRequest("setChatMenuButton", args).get<bool>("", false);
@@ -1962,7 +1629,7 @@ MenuButton::Ptr Api::getChatMenuButton(std::int64_t chatId) const {
         args.emplace_back("chat_id", chatId);
     }
 
-    return _tgTypeParser.parseJsonAndGetMenuButton(sendRequest("getChatMenuButton", args));
+    return _botTypeParser.parseJsonAndGetMenuButton(sendRequest("getChatMenuButton", args));
 }
 
 bool Api::setMyDefaultAdministratorRights(ChatAdministratorRights::Ptr rights,
@@ -1971,7 +1638,7 @@ bool Api::setMyDefaultAdministratorRights(ChatAdministratorRights::Ptr rights,
     args.reserve(2);
 
     if (rights != nullptr) {
-        args.emplace_back("rights", _tgTypeParser.parseChatAdministratorRights(rights));
+        args.emplace_back("rights", _botTypeParser.parseChatAdministratorRights(rights));
     }
     if (forChannels) {
         args.emplace_back("for_channels", forChannels);
@@ -1988,7 +1655,7 @@ ChatAdministratorRights::Ptr Api::getMyDefaultAdministratorRights(bool forChanne
         args.emplace_back("for_channels", forChannels);
     }
 
-    return _tgTypeParser.parseJsonAndGetChatAdministratorRights(sendRequest("getMyDefaultAdministratorRights", args));
+    return _botTypeParser.parseJsonAndGetChatAdministratorRights(sendRequest("getMyDefaultAdministratorRights", args));
 }
 
 Message::Ptr Api::editMessageText(const std::string& text,
@@ -2022,18 +1689,18 @@ Message::Ptr Api::editMessageText(const std::string& text,
         args.emplace_back("parse_mode", parseMode);
     }
     if (!entities.empty()) {
-        args.emplace_back("entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, entities));
+        args.emplace_back("entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, entities));
     }
     if (linkPreviewOptions) {
-        args.emplace_back("link_preview_options", _tgTypeParser.parseLinkPreviewOptions(linkPreviewOptions));
+        args.emplace_back("link_preview_options", _botTypeParser.parseLinkPreviewOptions(linkPreviewOptions));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseInlineKeyboardMarkup(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseInlineKeyboardMarkup(replyMarkup));
     }
 
     boost::property_tree::ptree p = sendRequest("editMessageText", args);
     if (p.get_child_optional("message_id")) {
-        return _tgTypeParser.parseJsonAndGetMessage(p);
+        return _botTypeParser.parseJsonAndGetMessage(p);
     } else {
         return nullptr;
     }
@@ -2071,15 +1738,15 @@ Message::Ptr Api::editMessageCaption(boost::variant<std::int64_t, std::string> c
         args.emplace_back("parse_mode", parseMode);
     }
     if (!captionEntities.empty()) {
-        args.emplace_back("caption_entities", _tgTypeParser.parseArray<MessageEntity>(&TgTypeParser::parseMessageEntity, captionEntities));
+        args.emplace_back("caption_entities", _botTypeParser.parseArray<MessageEntity>(&BotTypeParser::parseMessageEntity, captionEntities));
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
     boost::property_tree::ptree p = sendRequest("editMessageCaption", args);
     if (p.get_child_optional("message_id")) {
-        return _tgTypeParser.parseJsonAndGetMessage(p);
+        return _botTypeParser.parseJsonAndGetMessage(p);
     } else {
         return nullptr;
     }
@@ -2103,7 +1770,7 @@ Message::Ptr Api::editMessageMedia(InputMedia::Ptr media,
             args.emplace_back("chat_id", chatId);
         }
     }
-    args.emplace_back("media", _tgTypeParser.parseInputMedia(media));
+    args.emplace_back("media", _botTypeParser.parseInputMedia(media));
     if (messageId) {
         args.emplace_back("message_id", messageId);
     }
@@ -2111,12 +1778,12 @@ Message::Ptr Api::editMessageMedia(InputMedia::Ptr media,
         args.emplace_back("inline_message_id", inlineMessageId);
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
     boost::property_tree::ptree p = sendRequest("editMessageMedia", args);
     if (p.get_child_optional("message_id")) {
-        return _tgTypeParser.parseJsonAndGetMessage(p);
+        return _botTypeParser.parseJsonAndGetMessage(p);
     } else {
         return nullptr;
     }
@@ -2146,12 +1813,12 @@ Message::Ptr Api::editMessageReplyMarkup(boost::variant<std::int64_t, std::strin
         args.emplace_back("inline_message_id", inlineMessageId);
     }
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
     boost::property_tree::ptree p = sendRequest("editMessageReplyMarkup", args);
     if (p.get_child_optional("message_id")) {
-        return _tgTypeParser.parseJsonAndGetMessage(p);
+        return _botTypeParser.parseJsonAndGetMessage(p);
     } else {
         return nullptr;
     }
@@ -2166,10 +1833,10 @@ Poll::Ptr Api::stopPoll(boost::variant<std::int64_t, std::string> chatId,
     args.emplace_back("chat_id", chatId);
     args.emplace_back("message_id", messageId);
     if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
+        args.emplace_back("reply_markup", _botTypeParser.parseGenericReply(replyMarkup));
     }
 
-    return _tgTypeParser.parseJsonAndGetPoll(sendRequest("stopPoll", args));
+    return _botTypeParser.parseJsonAndGetPoll(sendRequest("stopPoll", args));
 }
 
 bool Api::deleteMessage(boost::variant<std::int64_t, std::string> chatId,
@@ -2190,266 +1857,13 @@ bool Api::deleteMessages(boost::variant<std::int64_t, std::string> chatId,
 
     args.emplace_back("chat_id", chatId);
     if (!messageIds.empty()) {
-        args.emplace_back("message_ids", _tgTypeParser.parseArray<std::int32_t>(
+        args.emplace_back("message_ids", _botTypeParser.parseArray<std::int32_t>(
             [] (const std::int32_t& i)->std::int32_t {
             return i;
         }, messageIds));
     }
 
     return sendRequest("deleteMessages", args).get<bool>("", false);
-}
-
-Message::Ptr Api::sendSticker(boost::variant<std::int64_t, std::string> chatId,
-                              boost::variant<InputFile::Ptr, std::string> sticker,
-                              ReplyParameters::Ptr replyParameters,
-                              GenericReply::Ptr replyMarkup,
-                              bool disableNotification,
-                              std::int32_t messageThreadId,
-                              bool protectContent,
-                              const std::string& emoji,
-                              const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(9);
-
-    if (!businessConnectionId.empty()) {
-        args.emplace_back("business_connection_id", businessConnectionId);
-    }
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    if (sticker.which() == 0) { // InputFile::Ptr
-        auto file = boost::get<InputFile::Ptr>(sticker);
-        args.emplace_back("sticker", file->data, true, file->mimeType, file->fileName);
-    } else {    // std::string
-        args.emplace_back("sticker", boost::get<std::string>(sticker));
-    }
-    if (!emoji.empty()) {
-        args.emplace_back("emoji", emoji);
-    }
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
-    
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendSticker", args));
-}
-
-StickerSet::Ptr Api::getStickerSet(const std::string& name) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("name", name);
-
-    return _tgTypeParser.parseJsonAndGetStickerSet(sendRequest("getStickerSet", args));
-}
-
-std::vector<Sticker::Ptr> Api::getCustomEmojiStickers(const std::vector<std::string>& customEmojiIds) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("custom_emoji_ids", _tgTypeParser.parseArray<std::string>(
-        [] (const std::string& customEmojiId) -> std::string {
-        return "\"" + StringTools::escapeJsonString(customEmojiId) + "\"";
-    }, customEmojiIds));
-
-    return _tgTypeParser.parseJsonAndGetArray<Sticker>(&TgTypeParser::parseJsonAndGetSticker, sendRequest("getCustomEmojiStickers", args));
-}
-
-File::Ptr Api::uploadStickerFile(std::int64_t userId,
-                                 InputFile::Ptr sticker,
-                                 const std::string& stickerFormat) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(3);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("sticker", sticker->data, true, sticker->mimeType, sticker->fileName);
-    args.emplace_back("sticker_format", stickerFormat);
-
-    return _tgTypeParser.parseJsonAndGetFile(sendRequest("uploadStickerFile", args));
-}
-
-bool Api::createNewStickerSet(std::int64_t userId,
-                              const std::string& name,
-                              const std::string& title,
-                              const std::vector<InputSticker::Ptr>& stickers,
-                              Sticker::Type stickerType,
-                              bool needsRepainting) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(6);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("name", name);
-    args.emplace_back("title", title);
-    args.emplace_back("stickers", _tgTypeParser.parseArray<InputSticker>(&TgTypeParser::parseInputSticker, stickers));
-    if (stickerType == Sticker::Type::Regular) {
-        args.emplace_back("sticker_type", "regular");
-    } else if (stickerType == Sticker::Type::Mask) {
-        args.emplace_back("sticker_type", "mask");
-    } else if (stickerType == Sticker::Type::CustomEmoji) {
-        args.emplace_back("sticker_type", "custom_emoji");
-    }
-    if (needsRepainting) {
-        args.emplace_back("needs_repainting", needsRepainting);
-    }
-
-    return sendRequest("createNewStickerSet", args).get<bool>("", false);
-}
-
-bool Api::addStickerToSet(std::int64_t userId,
-                          const std::string& name,
-                          InputSticker::Ptr sticker) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(3);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("name", name);
-    args.emplace_back("sticker", _tgTypeParser.parseInputSticker(sticker));
-
-    return sendRequest("addStickerToSet", args).get<bool>("", false);
-}
-
-bool Api::setStickerPositionInSet(const std::string& sticker,
-                                  std::int32_t position) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("sticker", sticker);
-    args.emplace_back("position", position);
-
-    return sendRequest("setStickerPositionInSet", args).get<bool>("", false);
-}
-
-bool Api::deleteStickerFromSet(const std::string& sticker) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("sticker", sticker);
-
-    return sendRequest("deleteStickerFromSet", args).get<bool>("", false);
-}
-
-bool Api::replaceStickerInSet(std::int64_t userId,
-                             const std::string& name,
-                             const std::string& oldSticker,
-                             InputSticker::Ptr sticker) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("name", name);
-    args.emplace_back("old_sticker", oldSticker);
-    args.emplace_back("sticker", _tgTypeParser.parseInputSticker(sticker));
-
-    return sendRequest("replaceStickerInSet", args).get<bool>("", false);
-}
-
-bool Api::setStickerEmojiList(const std::string& sticker,
-                              const std::vector<std::string>& emojiList) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("sticker", sticker);
-    args.emplace_back("emoji_list", _tgTypeParser.parseArray<std::string>(
-        [](const std::string& emoji)->std::string {
-        return "\"" + StringTools::escapeJsonString(emoji) + "\"";
-    }, emojiList));
-
-    return sendRequest("setStickerEmojiList", args).get<bool>("", false);
-}
-
-bool Api::setStickerKeywords(const std::string& sticker,
-                             const std::vector<std::string>& keywords) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("sticker", sticker);
-    if (!keywords.empty()) {
-        args.emplace_back("keywords", _tgTypeParser.parseArray<std::string>(
-            [](const std::string& keyword)->std::string {
-            return "\"" + StringTools::escapeJsonString(keyword) + "\"";
-        }, keywords));
-    }
-
-    return sendRequest("setStickerKeywords", args).get<bool>("", false);
-}
-
-bool Api::setStickerMaskPosition(const std::string& sticker,
-                                 MaskPosition::Ptr maskPosition) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("sticker", sticker);
-    if (maskPosition != nullptr) {
-        args.emplace_back("mask_position", _tgTypeParser.parseMaskPosition(maskPosition));
-    }
-
-    return sendRequest("setStickerMaskPosition", args).get<bool>("", false);
-}
-
-bool Api::setStickerSetTitle(const std::string& name,
-                             const std::string& title) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("name", name);
-    args.emplace_back("title", title);
-
-    return sendRequest("setStickerSetTitle", args).get<bool>("", false);
-}
-
-bool Api::setStickerSetThumbnail(const std::string& name,
-                                 std::int64_t userId,
-                                 const std::string& format,
-                                 boost::variant<InputFile::Ptr, std::string> thumbnail) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("name", name);
-    args.emplace_back("user_id", userId);
-    args.emplace_back("format", format);
-    if (thumbnail.which() == 0) {   // InputFile::Ptr
-        if (boost::get<InputFile::Ptr>(thumbnail) != nullptr) {
-            auto file = boost::get<InputFile::Ptr>(thumbnail);
-            args.emplace_back("thumbnail", file->data, true, file->mimeType, file->fileName);
-        }
-    } else {    // std::string
-        if (boost::get<std::string>(thumbnail) != "") {
-            args.emplace_back("thumbnail", boost::get<std::string>(thumbnail));
-        }
-    }
-
-    return sendRequest("setStickerSetThumbnail", args).get<bool>("", false);
-}
-
-bool Api::setCustomEmojiStickerSetThumbnail(const std::string& name,
-                                            const std::string& customEmojiId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("name", name);
-    if (!customEmojiId.empty()) {
-        args.emplace_back("custom_emoji_id", customEmojiId);
-    }
-
-    return sendRequest("setCustomEmojiStickerSetThumbnail", args).get<bool>("", false);
-}
-
-bool Api::deleteStickerSet(const std::string& name) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(1);
-
-    args.emplace_back("name", name);
-
-    return sendRequest("deleteStickerSet", args).get<bool>("", false);
 }
 
 bool Api::answerInlineQuery(const std::string& inlineQueryId,
@@ -2462,7 +1876,7 @@ bool Api::answerInlineQuery(const std::string& inlineQueryId,
     args.reserve(6);
 
     args.emplace_back("inline_query_id", inlineQueryId);
-    args.emplace_back("results", _tgTypeParser.parseArray<InlineQueryResult>(&TgTypeParser::parseInlineQueryResult, results));
+    args.emplace_back("results", _botTypeParser.parseArray<InlineQueryResult>(&BotTypeParser::parseInlineQueryResult, results));
     if (cacheTime != 300) {
         args.emplace_back("cache_time", cacheTime);
     }
@@ -2473,7 +1887,7 @@ bool Api::answerInlineQuery(const std::string& inlineQueryId,
         args.emplace_back("next_offset", nextOffset);
     }
     if (button != nullptr) {
-        args.emplace_back("button", _tgTypeParser.parseInlineQueryResultsButton(button));
+        args.emplace_back("button", _botTypeParser.parseInlineQueryResultsButton(button));
     }
 
     return sendRequest("answerInlineQuery", args).get<bool>("", false);
@@ -2485,327 +1899,13 @@ SentWebAppMessage::Ptr Api::answerWebAppQuery(const std::string& webAppQueryId,
     args.reserve(2);
 
     args.emplace_back("web_app_query_id", webAppQueryId);
-    args.emplace_back("result", _tgTypeParser.parseInlineQueryResult(result));
+    args.emplace_back("result", _botTypeParser.parseInlineQueryResult(result));
 
-    return _tgTypeParser.parseJsonAndGetSentWebAppMessage(sendRequest("answerWebAppQuery", args));
+    return _botTypeParser.parseJsonAndGetSentWebAppMessage(sendRequest("answerWebAppQuery", args));
 }
 
-Message::Ptr Api::sendInvoice(boost::variant<std::int64_t, std::string> chatId,
-                              const std::string& title,
-                              const std::string& description,
-                              const std::string& payload,
-                              const std::string& providerToken,
-                              const std::string& currency,
-                              const std::vector<LabeledPrice::Ptr>& prices,
-                              const std::string& providerData,
-                              const std::string& photoUrl,
-                              std::int32_t photoSize,
-                              std::int32_t photoWidth,
-                              std::int32_t photoHeight,
-                              bool needName,
-                              bool needPhoneNumber,
-                              bool needEmail,
-                              bool needShippingAddress,
-                              bool sendPhoneNumberToProvider,
-                              bool sendEmailToProvider,
-                              bool isFlexible,
-                              ReplyParameters::Ptr replyParameters,
-                              GenericReply::Ptr replyMarkup,
-                              bool disableNotification,
-                              std::int32_t messageThreadId,
-                              std::int32_t maxTipAmount,
-                              const std::vector<std::int32_t>& suggestedTipAmounts,
-                              const std::string& startParameter,
-                              bool protectContent) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(27);
-
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    args.emplace_back("title", title);
-    args.emplace_back("description", description);
-    args.emplace_back("payload", payload);
-    args.emplace_back("provider_token", providerToken);
-    args.emplace_back("currency", currency);
-    args.emplace_back("prices", _tgTypeParser.parseArray<LabeledPrice>(&TgTypeParser::parseLabeledPrice, prices));
-    args.emplace_back("max_tip_amount", maxTipAmount);
-    if (!suggestedTipAmounts.empty()) {
-        args.emplace_back("suggested_tip_amounts", _tgTypeParser.parseArray<std::int32_t>([] (const std::int32_t& option) -> std::int32_t {
-            return option;
-        }, suggestedTipAmounts));
-    }
-    if (!startParameter.empty()) {
-        args.emplace_back("start_parameter", startParameter);
-    }
-    if (!providerData.empty()) {
-        args.emplace_back("provider_data", providerData);
-    }
-    if (!photoUrl.empty()) {
-        args.emplace_back("photo_url", photoUrl);
-    }
-    if (photoSize) {
-        args.emplace_back("photo_size", photoSize);
-    }
-    if (photoWidth) {
-        args.emplace_back("photo_width", photoWidth);
-    }
-    if (photoHeight) {
-        args.emplace_back("photo_height", photoHeight);
-    }
-    if (needName) {
-        args.emplace_back("need_name", needName);
-    }
-    if (needPhoneNumber) {
-        args.emplace_back("need_phone_number", needPhoneNumber);
-    }
-    if (needEmail) {
-        args.emplace_back("need_email", needEmail);
-    }
-    if (needShippingAddress) {
-        args.emplace_back("need_shipping_address", needShippingAddress);
-    }
-    if (sendPhoneNumberToProvider) {
-        args.emplace_back("send_phone_number_to_provider", sendPhoneNumberToProvider);
-    }
-    if (sendEmailToProvider) {
-        args.emplace_back("send_email_to_provider", sendEmailToProvider);
-    }
-    if (isFlexible) {
-        args.emplace_back("is_flexible", isFlexible);
-    }
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
-    
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendInvoice", args));
-}
-
-std::string Api::createInvoiceLink(const std::string& title,
-                                   const std::string& description,
-                                   const std::string& payload,
-                                   const std::string& providerToken,
-                                   const std::string& currency,
-                                   const std::vector<LabeledPrice::Ptr>& prices,
-                                   std::int32_t maxTipAmount,
-                                   const std::vector<std::int32_t>& suggestedTipAmounts,
-                                   const std::string& providerData,
-                                   const std::string& photoUrl,
-                                   std::int32_t photoSize,
-                                   std::int32_t photoWidth,
-                                   std::int32_t photoHeight,
-                                   bool needName,
-                                   bool needPhoneNumber,
-                                   bool needEmail,
-                                   bool needShippingAddress,
-                                   bool sendPhoneNumberToProvider,
-                                   bool sendEmailToProvider,
-                                   bool isFlexible) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(20);
-
-    args.emplace_back("title", title);
-    args.emplace_back("description", description);
-    args.emplace_back("payload", payload);
-    args.emplace_back("provider_token", providerToken);
-    args.emplace_back("currency", currency);
-    args.emplace_back("prices", _tgTypeParser.parseArray<LabeledPrice>(&TgTypeParser::parseLabeledPrice, prices));
-    args.emplace_back("max_tip_amount", maxTipAmount);
-    if (!suggestedTipAmounts.empty()) {
-        args.emplace_back("suggested_tip_amounts", _tgTypeParser.parseArray<std::int32_t>([] (const std::int32_t& option) -> std::int32_t {
-            return option;
-        }, suggestedTipAmounts));
-    }
-    if (!providerData.empty()) {
-        args.emplace_back("provider_data", providerData);
-    }
-    if (!photoUrl.empty()) {
-        args.emplace_back("photo_url", photoUrl);
-    }
-    if (photoSize) {
-        args.emplace_back("photo_size", photoSize);
-    }
-    if (photoWidth) {
-        args.emplace_back("photo_width", photoWidth);
-    }
-    if (photoHeight) {
-        args.emplace_back("photo_height", photoHeight);
-    }
-    if (needName) {
-        args.emplace_back("need_name", needName);
-    }
-    if (needPhoneNumber) {
-        args.emplace_back("need_phone_number", needPhoneNumber);
-    }
-    if (needEmail) {
-        args.emplace_back("need_email", needEmail);
-    }
-    if (needShippingAddress) {
-        args.emplace_back("need_shipping_address", needShippingAddress);
-    }
-    if (sendPhoneNumberToProvider) {
-        args.emplace_back("send_phone_number_to_provider", sendPhoneNumberToProvider);
-    }
-    if (sendEmailToProvider) {
-        args.emplace_back("send_email_to_provider", sendEmailToProvider);
-    }
-    if (isFlexible) {
-        args.emplace_back("is_flexible", isFlexible);
-    }
-
-    return sendRequest("createInvoiceLink", args).get<std::string>("", "");
-}
-
-bool Api::answerShippingQuery(const std::string& shippingQueryId,
-                              bool ok,
-                              const std::vector<ShippingOption::Ptr>& shippingOptions,
-                              const std::string& errorMessage) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("shipping_query_id", shippingQueryId);
-    args.emplace_back("ok", ok);
-    if (!shippingOptions.empty()) {
-        args.emplace_back("shipping_options", _tgTypeParser.parseArray<ShippingOption>(&TgTypeParser::parseShippingOption, shippingOptions));
-    }
-    if (!errorMessage.empty()) {
-        args.emplace_back("error_message", errorMessage);
-    }
-
-    return sendRequest("answerShippingQuery", args).get<bool>("", false);
-}
-
-bool Api::answerPreCheckoutQuery(const std::string& preCheckoutQueryId,
-                                 bool ok,
-                                 const std::string& errorMessage) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(3);
-
-    args.emplace_back("pre_checkout_query_id", preCheckoutQueryId);
-    args.emplace_back("ok", ok);
-    if (!errorMessage.empty()) {
-        args.emplace_back("error_message", errorMessage);
-    }
-
-    return sendRequest("answerPreCheckoutQuery", args).get<bool>("", false);
-}
-
-bool Api::setPassportDataErrors(std::int64_t userId,
-                                const std::vector<PassportElementError::Ptr>& errors) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(2);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("errors", _tgTypeParser.parseArray<PassportElementError>(&TgTypeParser::parsePassportElementError, errors));
-
-    return sendRequest("setPassportDataErrors", args).get<bool>("", false);
-}
-
-Message::Ptr Api::sendGame(std::int64_t chatId,
-                           const std::string& gameShortName,
-                           ReplyParameters::Ptr replyParameters,
-                           InlineKeyboardMarkup::Ptr replyMarkup,
-                           bool disableNotification,
-                           std::int32_t messageThreadId,
-                           bool protectContent,
-                           const std::string& businessConnectionId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(8);
-
-    if (!businessConnectionId.empty()) {
-        args.emplace_back("business_connection_id", businessConnectionId);
-    }
-    args.emplace_back("chat_id", chatId);
-    if (messageThreadId != 0) {
-        args.emplace_back("message_thread_id", messageThreadId);
-    }
-    args.emplace_back("game_short_name", gameShortName);
-    if (disableNotification) {
-        args.emplace_back("disable_notification", disableNotification);
-    }
-    if (protectContent) {
-        args.emplace_back("protect_content", protectContent);
-    }
-    if (replyParameters != nullptr) {
-        args.emplace_back("reply_parameters", _tgTypeParser.parseReplyParameters(replyParameters));
-    }
-    if (replyMarkup) {
-        args.emplace_back("reply_markup", _tgTypeParser.parseGenericReply(replyMarkup));
-    }
-    
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("sendGame", args));
-}
-
-Message::Ptr Api::setGameScore(std::int64_t userId,
-                               std::int32_t score,
-                               bool force,
-                               bool disableEditMessage,
-                               std::int64_t chatId,
-                               std::int32_t messageId,
-                               const std::string& inlineMessageId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(7);
-
-    args.emplace_back("user_id", userId);
-    args.emplace_back("score", score);
-    if (force) {
-        args.emplace_back("force", force);
-    }
-    if (disableEditMessage) {
-        args.emplace_back("disable_edit_message", disableEditMessage);
-    }
-    if (chatId) {
-        args.emplace_back("chat_id", chatId);
-    }
-    if (messageId) {
-        args.emplace_back("message_id", messageId);
-    }
-    if (!inlineMessageId.empty()) {
-        args.emplace_back("inline_message_id", inlineMessageId);
-    }
-
-    return _tgTypeParser.parseJsonAndGetMessage(sendRequest("setGameScore", args));
-}
-
-std::vector<GameHighScore::Ptr> Api::getGameHighScores(std::int64_t userId,
-                                                  std::int64_t chatId,
-                                                  std::int32_t messageId,
-                                                  const std::string& inlineMessageId) const {
-    std::vector<HttpReqArg> args;
-    args.reserve(4);
-
-    args.emplace_back("user_id", userId);
-    if (chatId) {
-        args.emplace_back("chat_id", chatId);
-    }
-    if (messageId) {
-        args.emplace_back("message_id", messageId);
-    }
-    if (!inlineMessageId.empty()) {
-        args.emplace_back("inline_message_id", inlineMessageId);
-    }
-
-    return _tgTypeParser.parseJsonAndGetArray<GameHighScore>(&TgTypeParser::parseJsonAndGetGameHighScore, sendRequest("getGameHighScores", args));
-}
-
-std::string Api::downloadFile(const std::string& filePath,
+std::pair<long, std::string> Api::downloadFile(const std::string& url,
                               const std::vector<HttpReqArg>& args) const {
-    std::string url(_url);
-    url += "/file/bot";
-    url += _token;
-    url += "/";
-    url += filePath;
-
     return _httpClient.makeRequest(url, args);
 }
 
@@ -2826,51 +1926,55 @@ bool Api::blockedByUser(std::int64_t chatId) const {
     return isBotBlocked;
 }
 
-boost::property_tree::ptree Api::sendRequest(const std::string& method, const std::vector<HttpReqArg>& args) const {
+boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const std::string& json, const std::string& customMethod) const
+{
+    std::vector<HttpReqArg> args;
+	args.emplace_back("", json, /*isFile=*/false, "application/json");
+	return sendRequest(urlPath, args, customMethod);
+}
+
+boost::property_tree::ptree Api::sendRequest(const std::string& urlPath, const std::vector<HttpReqArg>& args, const std::string& customMethod) const {
     std::string url(_url);
-    url += "/bot";
-    url += _token;
-    url += "/";
-    url += method;
+    url += urlPath;
+
+	auto getMethod = [&]() -> std::string {
+		if (!customMethod.empty())
+			return customMethod;
+		return args.empty() ? "GET" : "POST";
+	};
 
     int requestRetryBackoff = _httpClient.getRequestBackoff();
     int retries = 0;
     while (1)
     {
         try {
-            std::string serverResponse = _httpClient.makeRequest(url, args);
-            
+            auto [httpCode, serverResponse] = _httpClient.makeRequest(url, args, customMethod);
             if (!serverResponse.compare(0, 6, "<html>")) {
-                std::string message = "tgbot-cpp library have got html page instead of json response. Maybe you entered wrong bot token.";
-                throw TgException(message, TgException::ErrorCode::HtmlResponse);
+                std::string message = "maxbot-cpp library have got html page instead of json response. Maybe you entered wrong bot token.";
+                throw BotException(message, BotException::ErrorCode::HtmlResponse, urlPath, getMethod());
             }
 
-            boost::property_tree::ptree result; 
+            boost::property_tree::ptree result;
             try {
-                result = _tgTypeParser.parseJson(serverResponse);
+                result = _botTypeParser.parseJson(serverResponse);
             } catch (boost::property_tree::ptree_error& e) {
-                std::string message = "tgbot-cpp library can't parse json response. " + std::string(e.what());
+                std::string message = "maxbot-cpp library can't parse json response. " + std::string(e.what());
 
-                throw TgException(message, TgException::ErrorCode::InvalidJson);
+                throw BotException(message, BotException::ErrorCode::InvalidJson, urlPath, getMethod());
             }
 
-            if (result.get<bool>("ok", false)) {
-                return result.get_child("result");
-            } else {
-                std::string message = result.get("description", "");
-                size_t errorCode = result.get<size_t>("error_code", 0u);
+			if (httpCode < 200 || httpCode > 299)
+				throw BotException(result.get("message", ""), static_cast<BotException::ErrorCode>(httpCode), urlPath, getMethod());
 
-                throw TgException(message, static_cast<TgException::ErrorCode>(errorCode));
-            }
+			return result;
         } catch (...) {
             int max_retries = _httpClient.getRequestMaxRetries();
-            if ((max_retries >= 0) && (retries == max_retries)) {
+            if ((max_retries >= 0) && (retries == max_retries))
                 throw;
-            } else {
-                std::this_thread::sleep_for(std::chrono::seconds(requestRetryBackoff));
-                retries++;
-                continue;
-            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(requestRetryBackoff));
+            retries++;
+            continue;
         }
     }
 }

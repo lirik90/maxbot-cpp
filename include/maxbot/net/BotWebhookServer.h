@@ -1,0 +1,50 @@
+#ifndef MAXBOT_TGHTTPSERVER_H
+#define MAXBOT_TGHTTPSERVER_H
+
+#include "maxbot/Bot.h"
+#include "maxbot/EventHandler.h"
+#include "maxbot/BotTypeParser.h"
+#include "maxbot/net/HttpServer.h"
+
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <iostream>
+
+namespace MaxBot {
+
+template<typename Protocol>
+class BotWebhookServer : public HttpServer<Protocol> {
+
+public:
+    BotWebhookServer(const typename boost::asio::basic_socket_acceptor<Protocol>::endpoint_type& endpoint, const typename HttpServer<Protocol>::ServerHandler& handler) = delete;
+
+    BotWebhookServer(const typename boost::asio::basic_socket_acceptor<Protocol>::endpoint_type& endpoint, std::string path, const EventHandler& eventHandler)
+            : HttpServer<Protocol>(endpoint,
+                                   [this](const std::string& _1, const std::unordered_map<std::string, std::string>& _2) { return _handle(_1, _2); }),
+              _path(std::move(path)), _eventHandler(eventHandler), _botTypeParser()
+    {
+    }
+
+    BotWebhookServer(const typename boost::asio::basic_socket_acceptor<Protocol>::endpoint_type& endpoint, const Bot& bot, const std::string& token)
+            : BotWebhookServer(endpoint, "/" + token, bot.getEventHandler())
+    {
+    }
+
+private:
+    std::string _handle(const std::string& data, const std::unordered_map<std::string, std::string>& headers) {
+		if (headers.at("_method") == "POST" && headers.at("_path") == _path)
+			_eventHandler.handleUpdate(_botTypeParser.parseJsonAndGetUpdate(_botTypeParser.parseJson(data)));
+		else
+			std::cout << "[BotWebhookServer] unknown request. Path: " << headers.at("_path") << " Method: " << headers.at("_method") << std::endl;
+        return HttpServer<Protocol>::_httpParser.generateResponse("", "text/plain", 200, "OK", false);
+    }
+
+    const std::string _path;
+    const EventHandler& _eventHandler;
+    const BotTypeParser _botTypeParser;
+};
+
+}
+
+#endif //MAXBOT_TGHTTPSERVER_H
